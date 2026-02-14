@@ -29,7 +29,7 @@ app = FastAPI(
 # Configuration
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-INDEX_NAME = "gemini-rag"
+INDEX_NAME = "gemini-rag-768"
 CHUNK_SIZE = 1000                   # hyper parameter 1
 CHUNK_OVERLAP = 200                 # hyper parameter 2
 
