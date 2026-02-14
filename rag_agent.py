@@ -14,14 +14,14 @@ from PyPDF2 import PdfReader
 import docx
 import io
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
+#from sentence_transformers import SentenceTransformer   # change 1
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Initialize FastAPI
 app = FastAPI(
-    title="Schemes RAG API with Gemini",
+    title="RAG API with Gemini",
     description="Upload documents and query them using Gemini AI",
     version="1.0.0"
 )
@@ -29,9 +29,9 @@ app = FastAPI(
 # Configuration
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-INDEX_NAME = "schemes-rag"
-CHUNK_SIZE = 1000
-CHUNK_OVERLAP = 200
+INDEX_NAME = "gemini-rag"
+CHUNK_SIZE = 1000                   # hyper parameter 1
+CHUNK_OVERLAP = 200                 # hyper parameter 2
 
 if not PINECONE_API_KEY:
     raise ValueError("PINECONE_API_KEY environment variable not set")
@@ -48,10 +48,8 @@ pc = Pinecone(api_key=PINECONE_API_KEY)
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Initialize embedding model
-# embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-
-embedding_model = SentenceTransformer("BAAI/bge-base-en-v1.5")
-
+#embedding_model = SentenceTransformer('all-MiniLM-L6-v2')     # change2   # hyperparameter3
+embedding_model = 'models/gemini-embedding-001'
 # Create or connect to index
 def setup_index():
     """Setup Pinecone index"""
@@ -66,8 +64,8 @@ def setup_index():
         print(f"Creating new index: {INDEX_NAME}")
         pc.create_index(
             name=INDEX_NAME,
-            dimension=768,  # all-MiniLM-L6-v2 dimension
-            metric='cosine',
+            dimension=768,  # must match EMBED_OUTPUT_DIM (Gemini with output_dimensionality=768)
+            metric='cosine',                                   # hyperparameter 5
             spec=ServerlessSpec(cloud='aws', region='us-east-1')
         )
     else:
@@ -80,7 +78,7 @@ index = setup_index()
 # Pydantic models
 class QueryRequest(BaseModel):
     question: str
-    top_k: int = 3
+    top_k: int = 3                                    # hyper parameter 6
 
 class QueryResponse(BaseModel):
     answer: str
@@ -116,7 +114,7 @@ def extract_text_from_file(file: UploadFile) -> str:
     else:
         raise HTTPException(status_code=400, detail="Unsupported file type. Use .txt, .pdf, or .docx")
 
-def chunk_text(text: str) -> List[str]:
+def chunk_text(text: str) -> List[str]:                     # chunking function for simple chunking
     """Split text into chunks"""
     chunks = []
     start = 0
@@ -130,25 +128,55 @@ def chunk_text(text: str) -> List[str]:
     
     return chunks
 
+# code for sentence transformer
+# def get_embedding(text: str) -> List[float]:  
+#     """Generate embedding using Sentence Transformers"""
+#     try:
+#         embedding = embedding_model.encode(text)
+#         return embedding.tolist()
+#     except Exception as e:
+#         print(f"Error generating embedding: {e}")
+#         raise
+
+# def get_query_embedding(text: str) -> List[float]:  
+#     """Generate embedding for query using Sentence Transformers"""
+#     try:
+#         embedding = embedding_model.encode(text)
+#         return embedding.tolist()
+#     except Exception as e:
+#         print(f"Error generating query embedding: {e}")
+#         raise
+
+
+# Must match Pinecone index dimension (index was created with 768)
+EMBED_OUTPUT_DIM = 768
+
 def get_embedding(text: str) -> List[float]:
-    """Generate embedding using BGE instruction tuning"""
+    """Generate embedding using Google Embeddings"""
     try:
-        embedding = embedding_model.encode(text)
-        return embedding.tolist()
+        result = client.models.embed_content(
+            model=embedding_model,
+            contents=text,
+            config=types.EmbedContentConfig(output_dimensionality=EMBED_OUTPUT_DIM),
+        )
+        return result.embeddings[0].values
     except Exception as e:
         print(f"Error generating embedding: {e}")
         raise
 
 def get_query_embedding(text: str) -> List[float]:
-    """Generate embedding for query using BGE instruction tuning"""
+    """Generate embedding for query using Google Embeddings"""
     try:
-        instruction = "Represent this sentence for searching relevant passages: "
-        embedding = embedding_model.encode(instruction + text)
-        # embedding = embedding_model.encode(text)
-        return embedding.tolist()
+        result = client.models.embed_content(
+            model=embedding_model,
+            contents=text,
+            config=types.EmbedContentConfig(output_dimensionality=EMBED_OUTPUT_DIM),
+        )
+        return result.embeddings[0].values
     except Exception as e:
         print(f"Error generating query embedding: {e}")
         raise
+
 
 # API Endpoints
 @app.get("/")
@@ -195,6 +223,11 @@ async def upload_file(file: UploadFile = File(...)):
         if not text.strip():
             raise HTTPException(status_code=400, detail="File is empty or unreadable")
         
+        for model in client.models.list():
+            print(f"Model: {model.name}")
+            if 'embed' in model.name.lower():
+                print(f"  -> EMBEDDING MODEL: {model.name}")
+
         # Chunk the text
         chunks = chunk_text(text)
         
@@ -223,7 +256,7 @@ async def upload_file(file: UploadFile = File(...)):
             })
         
         # Upsert to Pinecone in batches
-        batch_size = 100
+        batch_size = 100                             # batching the embedding vectors
         for i in range(0, len(vectors), batch_size):
             batch = vectors[i:i+batch_size]
             index.upsert(vectors=batch)
@@ -336,3 +369,6 @@ async def get_stats():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting stats: {str(e)}")
 
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8010)
